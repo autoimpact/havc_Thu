@@ -723,7 +723,7 @@
     function drawPipelines() {
     const svg = document.getElementById('svg-layer');
     const defsContent = svg.querySelector('defs').outerHTML;
-    svg.innerHTML = defsContent; 
+    svg.innerHTML = defsContent;
     svg.style.pointerEvents = 'auto';
 
     pipelines.forEach((pipe, index) => {
@@ -735,98 +735,89 @@
         const imgW2 = el2.querySelector('.img-wrapper');
 
         // 連接點 = 圖示中心
-        const x1 = el1.offsetLeft + el1.offsetWidth / 2;
-        const y1 = el1.offsetTop + imgW1.offsetTop + (imgW1.offsetHeight / 2);
-        const x2 = el2.offsetLeft + el2.offsetWidth / 2;
-        const y2 = el2.offsetTop + imgW2.offsetTop + (imgW2.offsetHeight / 2);
+        let x1 = el1.offsetLeft + el1.offsetWidth / 2;
+        let y1 = el1.offsetTop + imgW1.offsetTop + (imgW1.offsetHeight / 2);
+        let x2 = el2.offsetLeft + el2.offsetWidth / 2;
+        let y2 = el2.offsetTop + imgW2.offsetTop + (imgW2.offsetHeight / 2);
 
-        // === 智慧避讓：計算不會穿越其他元件的 midY ===
-        let midY = (y1 + y2) / 2;
-        const minX = Math.min(x1, x2);
-        const maxX = Math.max(x1, x2);
-
-        const obstacles = [];
-        nodes.forEach(n => {
-            if (n.id === pipe.from || n.id === pipe.to) return;
-            const otherEl = document.getElementById(n.id);
-            if (!otherEl) return;
-
-            const ox = otherEl.offsetLeft;
-            const ow = otherEl.offsetWidth;
-            const oy = otherEl.offsetTop;
-            const oh = otherEl.offsetHeight;
-
-            // X 範圍有重疊就視為潛在障礙
-            if (ox + ow > minX + 5 && ox < maxX - 5) {
-                obstacles.push({ top: oy, bottom: oy + oh });
-            }
-        });
-
-        if (obstacles.length > 0) {
-            let collides = false;
-            let maxBottom = -Infinity;
-            let minTop = Infinity;
-
-            obstacles.forEach(obs => {
-                if (midY > obs.top && midY < obs.bottom) {
-                    collides = true;
-                }
-                maxBottom = Math.max(maxBottom, obs.bottom);
-                minTop = Math.min(minTop, obs.top);
-            });
-
-            if (collides) {
-                const clearance = 30;
-                const aboveY = maxBottom + clearance;
-                const belowY = minTop - clearance;
-
-                // 選擇離原本 midY 較近的方向
-                if (Math.abs(aboveY - midY) <= Math.abs(belowY - midY)) {
-                    midY = aboveY;
-                } else {
-                    midY = belowY;
-                }
-            }
-        }
-
-        // cold / hot 管線平行偏移
-        const offset = pipe.type === 'cold' ? -12 : 12;
+        // cold / hot 管線平行偏移（讓兩種管線分開）
+        const offset = pipe.type === 'cold' ? -10 : 10;
         const cx1 = x1 + offset;
         const cy1 = y1 + offset;
         const cx2 = x2 + offset;
         const cy2 = y2 + offset;
-        const midY_path = midY + offset;
 
-        const pathData = `M ${cx1} ${cy1} L ${cx1} ${midY_path} L ${cx2} ${midY_path} L ${cx2} ${cy2}`;
+        // === 計算二次貝茲曲線的控制點（讓線條弧起）===
+        const dx = cx2 - cx1;
+        const dy = cy2 - cy1;
+        const dist = Math.hypot(dx, dy) || 1;
+        const midX = (cx1 + cx2) / 2;
+        const midY = (cy1 + cy2) / 2;
 
+        // 垂直於線段方向的單位向量
+        const perpX = -dy / dist;
+        const perpY = dx / dist;
+
+        // 弧度大小（距離越長弧度越大，但有上限）
+        let bulge = Math.min(75, dist * 0.22);
+
+        // cold 跟 hot 往不同方向弧起
+        const curveSide = (pipe.type === 'cold') ? 1 : -1;
+        const ctrlX = midX + perpX * bulge * curveSide;
+        const ctrlY = midY + perpY * bulge * curveSide;
+
+        const pathData = `M ${cx1} ${cy1} Q ${ctrlX} ${ctrlY} ${cx2} ${cy2}`;
+
+        // 建立群組
         const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
         group.style.cursor = 'pointer';
 
+        // 主管線
         const baseLine = document.createElementNS('http://www.w3.org/2000/svg', 'path');
         baseLine.setAttribute('d', pathData);
         baseLine.setAttribute('fill', 'none');
         baseLine.setAttribute('stroke', pipe.type === 'cold' ? 'var(--cold-pipe)' : 'var(--hot-pipe)');
-        baseLine.setAttribute('stroke-width', '2');
-        baseLine.setAttribute('opacity', '0.35');
+        baseLine.setAttribute('stroke-width', '2.5');
+        baseLine.setAttribute('opacity', '0.9');
         group.appendChild(baseLine);
 
-        drawArrowsOnSegment(group, cx1, cy1, cx1, midY_path, pipe.type);
-        drawArrowsOnSegment(group, cx1, midY_path, cx2, midY_path, pipe.type);
-        drawArrowsOnSegment(group, cx2, midY_path, cx2, cy2, pipe.type);
+        // 先把 group 加到 svg，讓 getTotalLength 可以正確計算
+        svg.appendChild(group);
 
+        // === 沿曲線繪製多個箭頭 ===
+        const pathLen = baseLine.getTotalLength();
+        const arrowSpacing = 26;
+        const arrowColor = pipe.type === 'cold' ? 'var(--cold-pipe)' : 'var(--hot-pipe)';
+
+        for (let dist = 18; dist < pathLen - 12; dist += arrowSpacing) {
+            const pt = baseLine.getPointAtLength(dist);
+            const nextPt = baseLine.getPointAtLength(Math.min(dist + 6, pathLen));
+            const angle = Math.atan2(nextPt.y - pt.y, nextPt.x - pt.x) * 180 / Math.PI;
+
+            const triangle = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+            triangle.setAttribute('points', '-5.5,-3.5 3.5,0 -5.5,3.5');
+            triangle.setAttribute('fill', arrowColor);
+            triangle.setAttribute('transform', `translate(${pt.x}, ${pt.y}) rotate(${angle})`);
+            triangle.setAttribute('class', pipe.type === 'cold' ? 'glow-cold' : 'glow-hot');
+            group.appendChild(triangle);
+        }
+
+        // 透明 hitArea（方便點擊刪除）
         const hitArea = document.createElementNS('http://www.w3.org/2000/svg', 'path');
         hitArea.setAttribute('d', pathData);
         hitArea.setAttribute('fill', 'none');
         hitArea.setAttribute('stroke', 'transparent');
-        hitArea.setAttribute('stroke-width', '25');
+        hitArea.setAttribute('stroke-width', '28');
+        group.appendChild(hitArea);
 
+        // 互動事件
         group.addEventListener('mouseenter', () => {
             baseLine.setAttribute('stroke-width', '4');
-            baseLine.setAttribute('opacity', '0.7');
+            baseLine.setAttribute('opacity', '1');
         });
         group.addEventListener('mouseleave', () => {
-            baseLine.setAttribute('stroke-width', '2');
-            baseLine.setAttribute('opacity', '0.35');
+            baseLine.setAttribute('stroke-width', '2.5');
+            baseLine.setAttribute('opacity', '0.9');
         });
         group.addEventListener('click', () => {
             if (confirm(i18n[currentLang].deletePipeConfirm)) {
@@ -834,9 +825,6 @@
                 drawPipelines();
             }
         });
-
-        group.appendChild(hitArea);
-        svg.appendChild(group);
     });
 }
 
